@@ -1,0 +1,14 @@
+*
+!.dockerignore
+!LICENSE
+!README.md
+!pyproject.toml
+!scripts/
+!scripts/__init__.py
+!scripts/managed_identity_evidence.py
+!scripts/run_managed_identity_tests.py
+!src/
+!src/**
+!tests/
+!tests/integration/
+!tests/integration/**

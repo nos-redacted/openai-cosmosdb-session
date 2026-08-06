@@ -1,0 +1,34 @@
+FROM python:3.13.15-slim-bookworm
+
+ARG OPENAI_COSMOSDB_SOURCE_COMMIT
+ARG OPENAI_COSMOSDB_SOURCE_REPOSITORY
+
+LABEL org.opencontainers.image.revision="${OPENAI_COSMOSDB_SOURCE_COMMIT}"
+LABEL org.opencontainers.image.source="https://github.com/${OPENAI_COSMOSDB_SOURCE_REPOSITORY}"
+
+ENV OPENAI_COSMOSDB_SOURCE_COMMIT="${OPENAI_COSMOSDB_SOURCE_COMMIT}" \
+    OPENAI_COSMOSDB_SOURCE_REPOSITORY="${OPENAI_COSMOSDB_SOURCE_REPOSITORY}" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+COPY scripts/__init__.py scripts/managed_identity_evidence.py scripts/run_managed_identity_tests.py ./scripts/
+COPY tests/integration ./tests/integration
+
+RUN test -n "${OPENAI_COSMOSDB_SOURCE_COMMIT}" \
+    && test -n "${OPENAI_COSMOSDB_SOURCE_REPOSITORY}" \
+    && python -m pip install --no-cache-dir \
+        ".[identity]" \
+        "pytest==9.1.1" \
+        "pytest-asyncio==1.4.0" \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home app \
+    && chown -R app:app /app
+
+USER app
+
+ENTRYPOINT ["python", "-m", "scripts.run_managed_identity_tests"]

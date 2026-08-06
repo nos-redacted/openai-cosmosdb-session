@@ -1,0 +1,400 @@
+name: Managed Identity Cosmos
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: managed-identity-cosmos
+  cancel-in-progress: false
+
+env:
+  EXPECTED_REPOSITORY: nos-redacted/openai-cosmosdb-session
+  IMAGE_REPOSITORY: openai-cosmosdb-session-mi
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: managed-identity-live
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_CONTAINER_REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+      AZURE_CONTAINER_APP_JOB: ${{ vars.AZURE_CONTAINER_APP_JOB }}
+      AZURE_LOG_ANALYTICS_WORKSPACE_ID: ${{ vars.AZURE_LOG_ANALYTICS_WORKSPACE_ID }}
+      AZURE_MANAGED_IDENTITY_CLIENT_ID: ${{ vars.AZURE_MANAGED_IDENTITY_CLIENT_ID }}
+      COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
+      COSMOS_DATABASE: ${{ vars.COSMOS_DATABASE }}
+      COSMOS_CONTAINER: ${{ vars.COSMOS_CONTAINER }}
+      COSMOS_CONNECTION_STRING_FROM_VAR: ${{ vars.COSMOS_CONNECTION_STRING }}
+      COSMOS_CONNECTION_STRING_FROM_SECRET: ${{ secrets.COSMOS_CONNECTION_STRING }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - name: Initialize durable evidence state
+        run: |
+          mkdir -p artifacts
+          printf '%s\n' 'not-started' > artifacts/orchestration-status.txt
+          printf '%s\n' 'not-recovered' > artifacts/evidence-status.txt
+          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:12}"
+          echo "MANAGED_IDENTITY_EVIDENCE_NONCE=$nonce" >> "$GITHUB_ENV"
+      - name: Require protected orchestration configuration
+        run: |
+          configuration_failure() {
+            printf '%s\n' 'configuration-failed' > artifacts/orchestration-status.txt
+            echo "::error::$1"
+            exit 1
+          }
+          required=(
+            AZURE_CLIENT_ID
+            AZURE_TENANT_ID
+            AZURE_SUBSCRIPTION_ID
+            AZURE_RESOURCE_GROUP
+            AZURE_CONTAINER_REGISTRY
+            AZURE_CONTAINER_APP_JOB
+            AZURE_LOG_ANALYTICS_WORKSPACE_ID
+            AZURE_MANAGED_IDENTITY_CLIENT_ID
+            COSMOS_ENDPOINT
+            COSMOS_DATABASE
+            COSMOS_CONTAINER
+          )
+          for name in "${required[@]}"; do
+            test -n "${!name}" || configuration_failure "$name is not configured"
+          done
+          test -z "$COSMOS_CONNECTION_STRING_FROM_VAR" || \
+            configuration_failure 'COSMOS_CONNECTION_STRING must not be configured as a variable'
+          test -z "$COSMOS_CONNECTION_STRING_FROM_SECRET" || \
+            configuration_failure 'COSMOS_CONNECTION_STRING must not be configured as a secret'
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY" || \
+            configuration_failure 'This workflow must run in the release repository'
+
+          uuid_pattern='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_LOG_ANALYTICS_WORKSPACE_ID AZURE_MANAGED_IDENTITY_CLIENT_ID; do
+            [[ "${!name}" =~ $uuid_pattern ]] || \
+              configuration_failure "$name has an invalid format"
+          done
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || \
+            configuration_failure 'GITHUB_SHA has an invalid format'
+          [[ "$AZURE_RESOURCE_GROUP" =~ ^[A-Za-z0-9._()-]{1,90}$ && \
+             "$AZURE_RESOURCE_GROUP" != *. ]] || \
+            configuration_failure 'AZURE_RESOURCE_GROUP has an invalid format'
+          [[ "$AZURE_CONTAINER_REGISTRY" =~ ^[a-z0-9]{5,50}$ ]] || \
+            configuration_failure 'AZURE_CONTAINER_REGISTRY has an invalid format'
+          [[ "$AZURE_CONTAINER_APP_JOB" =~ ^[a-z][a-z0-9-]{0,30}$ && \
+             "$AZURE_CONTAINER_APP_JOB" != *--* && "$AZURE_CONTAINER_APP_JOB" != *- ]] || \
+            configuration_failure 'AZURE_CONTAINER_APP_JOB has an invalid format'
+          printf '%s\n' 'configuration-validated' > artifacts/orchestration-status.txt
+      - uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and run the exact commit in Container Apps
+        run: |
+          set -Eeuo pipefail
+          status_file='artifacts/orchestration-status.txt'
+          record_failure() {
+            printf '%s\n' "$1" > "$status_file"
+            echo "::error::$2"
+            exit 0
+          }
+
+          printf '%s\n' 'building-image' > "$status_file"
+          if ! az acr build \
+            --registry "$AZURE_CONTAINER_REGISTRY" \
+            --image "$IMAGE_REPOSITORY:$GITHUB_SHA" \
+            --file infra/live-test/Dockerfile.managed-identity \
+            --build-arg "OPENAI_COSMOSDB_SOURCE_COMMIT=$GITHUB_SHA" \
+            --build-arg "OPENAI_COSMOSDB_SOURCE_REPOSITORY=$GITHUB_REPOSITORY" \
+            .; then
+            record_failure 'image-build-failed' 'ACR could not build the managed-identity proof image'
+          fi
+
+          if ! image_digest="$(az acr repository show \
+            --name "$AZURE_CONTAINER_REGISTRY" \
+            --image "$IMAGE_REPOSITORY:$GITHUB_SHA" \
+            --query digest --output tsv)"; then
+            record_failure 'digest-resolution-failed' 'The proof image digest could not be resolved'
+          fi
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || \
+            record_failure 'digest-validation-failed' 'ACR returned an invalid image digest'
+
+          if ! login_server="$(az acr show \
+            --name "$AZURE_CONTAINER_REGISTRY" \
+            --query loginServer --output tsv)"; then
+            record_failure 'registry-resolution-failed' 'The ACR login server could not be resolved'
+          fi
+          [[ "$login_server" =~ ^[a-z0-9.-]+\.azurecr\.io$ ]] || \
+            record_failure 'registry-validation-failed' 'ACR returned an invalid login server'
+
+          image_reference="$login_server/$IMAGE_REPOSITORY@$image_digest"
+          printf '%s\n' "$image_digest" > artifacts/image-digest.txt
+          {
+            echo "OPENAI_COSMOSDB_IMAGE_DIGEST=$image_digest"
+            echo "EXPECTED_IMAGE_REFERENCE=$image_reference"
+          } >> "$GITHUB_ENV"
+          export image_digest image_reference
+
+          execution_template="$RUNNER_TEMP/managed-identity-execution.json"
+          export execution_template
+          python - <<'PY'
+          import json
+          import os
+
+          environment = {
+              "AZURE_CLIENT_ID": os.environ["AZURE_MANAGED_IDENTITY_CLIENT_ID"],
+              "COSMOS_AUTH_MODE": "managed-identity",
+              "COSMOS_CONTAINER": os.environ["COSMOS_CONTAINER"],
+              "COSMOS_DATABASE": os.environ["COSMOS_DATABASE"],
+              "COSMOS_ENDPOINT": os.environ["COSMOS_ENDPOINT"],
+              "COSMOS_LIVE_TESTS": "1",
+              "GITHUB_REPOSITORY": os.environ["GITHUB_REPOSITORY"],
+              "GITHUB_RUN_ATTEMPT": os.environ["GITHUB_RUN_ATTEMPT"],
+              "GITHUB_RUN_ID": os.environ["GITHUB_RUN_ID"],
+              "GITHUB_SHA": os.environ["GITHUB_SHA"],
+              "MANAGED_IDENTITY_EVIDENCE_NONCE": os.environ[
+                  "MANAGED_IDENTITY_EVIDENCE_NONCE"
+              ],
+              "OPENAI_COSMOSDB_IMAGE_DIGEST": os.environ["image_digest"],
+          }
+          template = {
+              "containers": [
+                  {
+                      "name": "managed-identity-tests",
+                      "image": os.environ["image_reference"],
+                      "command": ["python"],
+                      "args": ["-m", "scripts.run_managed_identity_tests"],
+                      "env": [
+                          {"name": name, "value": value}
+                          for name, value in environment.items()
+                      ],
+                      "resources": {"cpu": 0.5, "memory": "1Gi"},
+                  }
+              ],
+              "initContainers": [],
+          }
+          with open(os.environ["execution_template"], "w", encoding="utf-8") as handle:
+              json.dump(template, handle, separators=(",", ":"), sort_keys=True)
+          PY
+
+          printf '%s\n' 'starting-execution' > "$status_file"
+          if ! execution_name="$(az containerapp job start \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_JOB" \
+            --yaml "$execution_template" \
+            --query name --output tsv)"; then
+            record_failure 'execution-start-failed' 'Container Apps could not start the proof execution'
+          fi
+          [[ "$execution_name" =~ ^[-A-Za-z0-9._()]+$ ]] || \
+            record_failure 'execution-name-invalid' 'Container Apps returned an invalid execution name'
+          echo "MANAGED_IDENTITY_EXECUTION_NAME=$execution_name" >> "$GITHUB_ENV"
+          printf '%s\n' "$execution_name" > artifacts/execution-name.txt
+
+          printf '%s\n' 'execution-running' > "$status_file"
+          for _ in $(seq 1 240); do
+            if ! az containerapp job execution show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_CONTAINER_APP_JOB" \
+              --job-execution-name "$execution_name" \
+              --output json > artifacts/execution.json; then
+              sleep 10
+              continue
+            fi
+            if ! execution_values="$(python - <<'PY'
+          import json
+
+          with open("artifacts/execution.json", encoding="utf-8") as handle:
+              execution = json.load(handle)
+          properties = execution.get("properties")
+          if not isinstance(properties, dict):
+              raise SystemExit(2)
+          containers = properties.get("template", {}).get("containers", [])
+          images = [
+              container.get("image")
+              for container in containers
+              if container.get("name") == "managed-identity-tests"
+          ]
+          status = properties.get("status")
+          if not isinstance(status, str) or len(images) != 1 or not isinstance(images[0], str):
+              raise SystemExit(2)
+          print(f"{status}\t{images[0]}")
+          PY
+            )"; then
+              record_failure 'execution-response-invalid' 'Container Apps returned an invalid execution document'
+            fi
+            IFS=$'\t' read -r execution_status actual_image <<< "$execution_values"
+            if [[ "$actual_image" != "$image_reference" ]]; then
+              az containerapp job stop \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --name "$AZURE_CONTAINER_APP_JOB" \
+                --job-execution-name "$execution_name" \
+                --no-wait >/dev/null 2>&1 || true
+              record_failure 'execution-image-mismatch' 'The execution did not use the expected image digest'
+            fi
+            printf '%s\n' "$execution_status" > artifacts/execution-status.txt
+            case "$execution_status" in
+              Succeeded)
+                printf '%s\n' 'succeeded' > "$status_file"
+                exit 0
+                ;;
+              Running|Processing)
+                sleep 10
+                ;;
+              Stopped|Degraded|Failed|Unknown)
+                record_failure "execution-${execution_status,,}" \
+                  "The managed-identity execution ended with status $execution_status"
+                ;;
+              *)
+                record_failure 'execution-status-invalid' \
+                  'Container Apps returned an unsupported execution status'
+                ;;
+            esac
+          done
+
+          az containerapp job stop \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP_JOB" \
+            --job-execution-name "$execution_name" \
+            --no-wait >/dev/null 2>&1 || true
+          record_failure 'execution-timed-out' 'The managed-identity execution did not finish in time'
+      - name: Recover checksum-protected JUnit from Log Analytics
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          status_file='artifacts/evidence-status.txt'
+          if [[ -z "${OPENAI_COSMOSDB_IMAGE_DIGEST:-}" || \
+                -z "${EXPECTED_IMAGE_REFERENCE:-}" || \
+                -z "${MANAGED_IDENTITY_EVIDENCE_NONCE:-}" ]]; then
+            printf '%s\n' 'recovery-prerequisites-missing' > "$status_file"
+            echo '::error::Image provenance was unavailable for evidence recovery'
+            exit 0
+          fi
+
+          query_request="$RUNNER_TEMP/log-analytics-query.json"
+          export query_request
+          python - <<'PY'
+          import json
+          import os
+
+          job = os.environ["AZURE_CONTAINER_APP_JOB"].replace("'", "''")
+          nonce = os.environ["MANAGED_IDENTITY_EVIDENCE_NONCE"].replace("'", "''")
+          query = f"""
+          ContainerAppConsoleLogs_CL
+          | where TimeGenerated > ago(2h)
+          | where ContainerAppName_s == '{job}'
+          | where Log_s startswith 'COSMOS_MI_JUNIT|{nonce}|'
+          | project TimeGenerated, Log_s, ContainerImage_s
+          | order by TimeGenerated asc
+          """
+          with open(os.environ["query_request"], "w", encoding="utf-8") as handle:
+              json.dump({"query": query}, handle)
+          PY
+
+          for _ in $(seq 1 40); do
+            if ! access_token="$(az account get-access-token \
+              --resource https://api.loganalytics.io \
+              --query accessToken --output tsv)"; then
+              printf '%s\n' 'token-acquisition-failed' > "$status_file"
+              echo '::error::A Log Analytics access token could not be acquired'
+              exit 0
+            fi
+            if ! curl --proto '=https' --tlsv1.2 --fail-with-body \
+              --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $access_token" \
+              --header 'Content-Type: application/json' \
+              --data-binary "@$query_request" \
+              "https://api.loganalytics.azure.com/v1/workspaces/$AZURE_LOG_ANALYTICS_WORKSPACE_ID/query" \
+              --output artifacts/log-query-response.json; then
+              sleep 15
+              continue
+            fi
+            unset access_token
+
+            EXPECTED_IMAGE_REFERENCE="$EXPECTED_IMAGE_REFERENCE" python - <<'PY'
+          import json
+          import os
+
+          try:
+              with open("artifacts/log-query-response.json", encoding="utf-8") as handle:
+                  response = json.load(handle)
+              tables = response["tables"]
+              if not isinstance(tables, list) or len(tables) != 1:
+                  raise ValueError
+              table = tables[0]
+              columns = [column["name"] for column in table["columns"]]
+              log_index = columns.index("Log_s")
+              image_index = columns.index("ContainerImage_s")
+              rows = table["rows"]
+              if not isinstance(rows, list) or not rows:
+                  raise SystemExit(3)
+              logs = []
+              for row in rows:
+                  if row[image_index] != os.environ["EXPECTED_IMAGE_REFERENCE"]:
+                      raise SystemExit(4)
+                  if not isinstance(row[log_index], str):
+                      raise ValueError
+                  logs.append(row[log_index])
+          except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+              raise SystemExit(2)
+          with open("artifacts/evidence.log", "w", encoding="utf-8") as handle:
+              handle.write("\n".join(logs) + "\n")
+          PY
+            parser_status=$?
+            if [[ "$parser_status" -eq 4 ]]; then
+              printf '%s\n' 'log-image-mismatch' > "$status_file"
+              echo '::error::Log Analytics returned evidence from an unexpected image'
+              exit 0
+            fi
+            if [[ "$parser_status" -ne 0 ]]; then
+              sleep 15
+              continue
+            fi
+
+            if python scripts/managed_identity_evidence.py \
+              --log-file artifacts/evidence.log \
+              --nonce "$MANAGED_IDENTITY_EVIDENCE_NONCE" \
+              --output artifacts/managed-identity-test-results.xml \
+              --expected-repository "$GITHUB_REPOSITORY" \
+              --expected-run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --expected-run-id "$GITHUB_RUN_ID" \
+              --expected-source-commit "$GITHUB_SHA" \
+              --expected-image-digest "$OPENAI_COSMOSDB_IMAGE_DIGEST"; then
+              printf '%s\n' 'recovered' > "$status_file"
+              exit 0
+            fi
+            rm -f artifacts/managed-identity-test-results.xml
+            sleep 15
+          done
+
+          printf '%s\n' 'recovery-timed-out' > "$status_file"
+          echo '::error::Complete checksum-valid managed-identity JUnit was not recovered'
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: managed-identity-test-results
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce execution and evidence results
+        if: ${{ always() }}
+        run: |
+          orchestration_status="$(cat artifacts/orchestration-status.txt 2>/dev/null || true)"
+          evidence_status="$(cat artifacts/evidence-status.txt 2>/dev/null || true)"
+          echo "Container Apps orchestration: ${orchestration_status:-missing}"
+          echo "Managed-identity evidence: ${evidence_status:-missing}"
+          test "$orchestration_status" = 'succeeded'
+          test "$evidence_status" = 'recovered'

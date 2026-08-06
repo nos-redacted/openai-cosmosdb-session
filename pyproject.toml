@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openai-cosmosdb-session"
+version = "0.2.0"
+description = "Azure Cosmos DB session backend for the OpenAI Agents SDK"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+keywords = ["azure", "cosmosdb", "openai", "agents", "session"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "azure-cosmos[aio]>=4.16.3,<5",
+    "openai-agents>=0.19.1,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/nos-redacted/openai-cosmosdb-session"
+Documentation = "https://github.com/nos-redacted/openai-cosmosdb-session#readme"
+Repository = "https://github.com/nos-redacted/openai-cosmosdb-session.git"
+Issues = "https://github.com/nos-redacted/openai-cosmosdb-session/issues"
+Changelog = "https://github.com/nos-redacted/openai-cosmosdb-session/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+identity = [
+    "azure-identity>=1.19,<2",
+]
+
+[dependency-groups]
+dev = [
+    "build==1.5.1",
+    "hatchling==1.31.0",
+    "mypy==2.3.0",
+    "pip-audit==2.10.1",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openai_cosmosdb_session"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live_cosmos: requires an explicitly enabled Azure Cosmos DB for NoSQL account",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv-live"]
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "C4", "E", "F", "I", "UP", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["openai_cosmosdb_session"]
+mypy_path = "src"
