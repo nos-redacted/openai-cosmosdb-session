@@ -96,6 +96,45 @@ class ContainerValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DESC", container.queries[1][0])
         self.assertNotEqual(container.queries[0][1], "session-1")
 
+    async def test_root_included_opt_out_policy_is_compatible(self) -> None:
+        container = _ValidationContainer()
+        container.properties["indexingPolicy"] = {
+            "indexingMode": "consistent",
+            "includedPaths": [{"path": "/*"}],
+            "excludedPaths": [{"path": "/message_data/?"}],
+        }
+
+        result = await self._session(container).validate_container()
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(len(container.queries), 2)
+
+    async def test_excluding_a_required_path_is_rejected(self) -> None:
+        container = _ValidationContainer()
+        container.properties["indexingPolicy"] = {
+            "indexingMode": "consistent",
+            "includedPaths": [{"path": "/*"}],
+            "excludedPaths": [{"path": "/seq/?"}],
+        }
+
+        result = await self._session(container).validate_container()
+
+        self.assertEqual(result.issue_codes, ("invalid_indexing_policy",))
+        self.assertEqual(container.queries, [])
+
+    async def test_indexing_mode_none_is_rejected(self) -> None:
+        container = _ValidationContainer()
+        container.properties["indexingPolicy"] = {
+            "indexingMode": "none",
+            "includedPaths": [],
+            "excludedPaths": [{"path": "/*"}],
+        }
+
+        result = await self._session(container).validate_container()
+
+        self.assertEqual(result.issue_codes, ("invalid_indexing_policy",))
+        self.assertEqual(container.queries, [])
+
     async def test_partition_key_and_ttl_mismatches_are_reported(self) -> None:
         container = _ValidationContainer()
         container.properties["partitionKey"] = {"paths": ["/tenantId"]}
