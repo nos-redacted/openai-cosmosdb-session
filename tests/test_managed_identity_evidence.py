@@ -56,7 +56,8 @@ class ManagedIdentityEvidenceTests(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    "scripts/managed_identity_evidence.py",
+                    "-m",
+                    "scripts.managed_identity_evidence",
                     "--log-file",
                     str(log_file),
                     "--nonce",
