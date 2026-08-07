@@ -57,6 +57,7 @@ packages = ["src/openai_cosmosdb_session"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "live_cosmos: requires an explicitly enabled Azure Cosmos DB for NoSQL account",
 ]
