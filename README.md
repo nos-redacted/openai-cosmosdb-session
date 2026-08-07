@@ -13,11 +13,31 @@ substitute for testing on a dependency-supported runtime.
 Version 0.2 uses persistence schema v2. Delete pre-production 0.1 session data before upgrading;
 there is no legacy migration path.
 
+## Quickstart
+
+The [complete quickstart](docs/quickstart.md) provisions the container contract, runs two real
+OpenAI Agents SDK turns, closes and reopens the Cosmos client between them, and verifies persisted
+history. It also provides Microsoft-aligned indexing guidance and policy examples for dedicated,
+write-heavy, evolving, TTL, reporting, search, and bulk-import workloads.
+
+From this checkout, install the package, set `OPENAI_API_KEY` and `COSMOS_CONNECTION_STRING`, then
+run the [example](examples/agents_quickstart.py):
+
+```powershell
+python -m pip install .
+$env:OPENAI_API_KEY = "<openai-api-key>"
+$env:COSMOS_CONNECTION_STRING = "<cosmos-connection-string>"
+python examples/agents_quickstart.py
+```
+
+The example retains its generated session for inspection. Pass `--cleanup` to delete it after the
+close-and-reopen persistence check.
+
 ## Cosmos DB setup
 
 Create a container with partition key `/sessionId`. Enable TTL with `default_ttl=-1` if
-sessions will use `ttl_seconds`. The recommended indexing policy indexes only the fields used
-by session queries:
+sessions will use `ttl_seconds`. For a dedicated container with a stable session schema, the
+recommended indexing policy indexes only the fields used by session queries:
 
 ```python
 from azure.cosmos import PartitionKey
@@ -27,6 +47,7 @@ await database.create_container_if_not_exists(
     partition_key=PartitionKey(path="/sessionId"),
     default_ttl=-1,
     indexing_policy={
+        "automatic": True,
         "indexingMode": "consistent",
         "includedPaths": [
             {"path": "/seq/?"},
@@ -43,7 +64,9 @@ Container provisioning is intentionally separate from session construction.
 The partition key is an immutable container property. If an existing container does not use
 exactly `/sessionId`, create a new container rather than reusing it. The indexing policy above is
 recommended for cost and query efficiency; the live test suite exercises the required ordered
-queries against the deployed policy.
+queries against the deployed policy. Microsoft generally recommends an opt-out policy for evolving
+schemas; see the [indexing scenarios](docs/quickstart.md#scenario-policies) before sharing the
+container or adding application-owned queries.
 
 For a one-time private test, the same resources can be provisioned with the async SDK and an
 account connection string:
@@ -59,6 +82,7 @@ async with CosmosClient.from_connection_string(connection_string) as client:
         partition_key=PartitionKey(path="/sessionId"),
         default_ttl=-1,
         indexing_policy={
+            "automatic": True,
             "indexingMode": "consistent",
             "includedPaths": [
                 {"path": "/seq/?"},
