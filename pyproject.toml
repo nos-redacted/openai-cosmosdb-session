@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "azure-cosmos[aio]>=4.16.3,<5",
-    "openai-agents>=0.19.1,<1",
+    "openai-agents>=0.20.0,<1",
 ]
 
 [project.urls]
@@ -42,13 +42,13 @@ identity = [
 [dependency-groups]
 dev = [
     "build==1.5.1",
-    "hatchling==1.31.0",
+    "hatchling==1.32.0",
     "mypy==2.3.0",
     "pip-audit==2.10.1",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
-    "ruff==0.16.1",
+    "ruff==0.16.3",
 ]
 
 [tool.hatch.build.targets.wheel]
