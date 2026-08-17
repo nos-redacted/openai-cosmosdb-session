@@ -163,7 +163,7 @@ jobs:
             --secret-scan release/secret-scan.json \
             --notes-output release/notes.md
       - run: sha256sum dist/* > release/SHA256SUMS
-      - uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: dist/
           format: cyclonedx-json
