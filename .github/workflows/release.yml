@@ -163,7 +163,7 @@ jobs:
             --secret-scan release/secret-scan.json \
             --notes-output release/notes.md
       - run: sha256sum dist/* > release/SHA256SUMS
-      - uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist/
           format: cyclonedx-json
@@ -213,7 +213,7 @@ jobs:
         working-directory: candidate
         run: sha256sum --check release/SHA256SUMS
       - name: Publish the verified distributions with provenance
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: candidate/dist/
           print-hash: true
